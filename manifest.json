@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Gitee 一键同步",
+  "version": "1.0.0",
+  "description": "在 Gitee 仓库列表页批量、在单仓库页单独强制从 GitHub 同步。",
+  "permissions": ["storage"],
+  "host_permissions": ["https://gitee.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Gitee 一键同步",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://gitee.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
