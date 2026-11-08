@@ -542,11 +542,11 @@
       margin-right: 4px; vertical-align: 1px; animation: gs-pulse 1.1s ease-in-out infinite;
     }
     @keyframes gs-pulse { 0%,100% { opacity: .3 } 50% { opacity: 1 } }
-    .chip.ready { background: #eef2fb; color: #5566a8; }
+    .chip.ready { background: #eef2fb; color: #47579b; }
     .chip.queued { background: #eaf1ff; color: #2f6bd8; }
     .chip.ok { background: #e8f7ef; color: #1d8a5a; }
     .chip.err { background: #fdecec; color: #cc4040; }
-    .chip.muted { background: #f4f5f8; color: #a8b0bf; }
+    .chip.muted { background: #f1f3f7; color: #8b93a7; }
     .foot { padding: 11px 16px 14px; border-top: 1px solid #f0f3f9; background: #fcfdff; }
     .bar { height: 5px; border-radius: 3px; background: #e9eef7; overflow: hidden; margin-bottom: 9px; }
     .bar i { display: block; height: 100%; width: 0; border-radius: 3px;
@@ -641,6 +641,15 @@
 
   function bind() {
     ui.fab.addEventListener("mousedown", onDragStart);
+    document.addEventListener(
+      "mousedown",
+      (e) => {
+        if (!ui.panel.classList.contains("open")) return;
+        const path = e.composedPath ? e.composedPath() : [];
+        if (!path.includes(ui.host)) togglePanel(false);
+      },
+      true
+    );
 
     ui.panel.querySelector(".x").addEventListener("click", () => togglePanel(false));
 
@@ -733,9 +742,8 @@
 
   function togglePanel(force) {
     const open = typeof force === "boolean" ? force : !ui.panel.classList.contains("open");
-    ui.panel.classList.toggle("open", open);
-    syncPanelPos();
     if (open) {
+      // 先按悬浮入口当前位置定位，再隐藏入口（隐藏后它的 rect 会变 0）
       const r = ui.fab.getBoundingClientRect();
       const w = ui.panel.offsetWidth || 392;
       const bottom = Math.max(10, window.innerHeight - r.top + 10);
@@ -743,6 +751,12 @@
       ui.panel.style.top = "";
       ui.panel.style.bottom = bottom + "px";
       ui.panel.style.right = right + "px";
+    }
+    ui.panel.classList.toggle("open", open);
+    // 面板打开时收起悬浮入口，避免两个主按钮并存
+    ui.fab.style.display = open ? "none" : "";
+    syncPanelPos();
+    if (open) {
       if (state.mode === "repo" && !state.items.length) {
         state.items = [
           { path: state.path, name: state.path.split("/")[1], importUrl: "", checked: false, state: "idle", msg: "" },
