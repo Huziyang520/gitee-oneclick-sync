@@ -1,10 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Gitee 一键同步",
-  "version": "1.0.0",
-  "description": "在 Gitee 仓库列表页批量、在单仓库页单独强制从 GitHub 同步。",
+  "version": "1.1.0",
+  "description": "在 Gitee 仓库列表页批量、在单仓库页单独强制从 GitHub 同步，可附带同步发行版（Release）与附件。",
   "permissions": ["storage"],
-  "host_permissions": ["https://gitee.com/*"],
+  "host_permissions": [
+    "https://gitee.com/*",
+    "https://api.github.com/*",
+    "https://github.com/*",
+    "https://objects.githubusercontent.com/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },

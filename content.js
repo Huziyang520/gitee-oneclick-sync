@@ -14,6 +14,7 @@
 
   const OPT_KEY = "gsOpts";
   const CACHE_KEY = "gsCache";
+  const TOKEN_KEY = "gsTokens";
   const POS_KEY = "gsPos";
   const CACHE_TTL = 24 * 60 * 60 * 1000;
 
@@ -25,6 +26,7 @@
   const HOST_ID = "gitee-sync-host";
 
   const CHIP = {
+    rel: ["发行版", "busy"],
     idle: ["待扫描", ""],
     checking: ["扫描中", "busy"],
     ready: ["待同步", "ready"],
@@ -44,9 +46,11 @@
     running: false,
     stopFlag: false,
     token: "",
-    opts: { syncWiki: false, prune: false },
+    opts: { syncWiki: false, prune: false, syncRelease: false },
+    tokens: { gitee: "", github: "" },
     cache: {},
     log: "",
+    releaseSummary: "",
     lastHref: location.href,
     dragEndedAt: 0,
   };
@@ -66,6 +70,10 @@
     btnStop: null,
     swWiki: null,
     swPrune: null,
+    swRelease: null,
+    tokensEl: null,
+    tkGitee: null,
+    tkGithub: null,
     subEl: null,
     rows: new Map(),
     drag: null,
@@ -87,7 +95,7 @@
   function storeGet() {
     return new Promise((resolve) => {
       try {
-        chrome.storage.local.get([OPT_KEY, CACHE_KEY, POS_KEY], (v) => resolve(v || {}));
+        chrome.storage.local.get([OPT_KEY, CACHE_KEY, POS_KEY, TOKEN_KEY], (v) => resolve(v || {}));
       } catch (_) {
         resolve({});
       }
@@ -367,6 +375,7 @@
     if (!state.token) state.token = csrfFromDom();
     state.running = true;
     state.stopFlag = false;
+    state.releaseSummary = "";
     renderSummary();
 
     let streak = 0;
@@ -427,13 +436,87 @@
         if (i.state === "queued" || i.state === "syncing") setItem(i, "error", "等待超时，请到仓库页确认");
       });
     }
+    if (state.opts.syncRelease) {
+      if (!state.tokens.gitee) {
+        state.log += "；未填 Gitee 令牌，跳过发行版";
+        renderSummary();
+      } else {
+        state.log = "代码同步结束，开始同步发行版…";
+        renderSummary();
+        await runReleasePhase(targets);
+      }
+    }
+
     state.running = false;
     const done = targets.filter((i) => i.state === "done").length;
     const bad = targets.filter((i) => i.state === "error").length;
     const skip = state.items.filter((i) => i.state === "noimport").length;
     state.log =
       (state.stopFlag ? "已停止：" : "同步结束：") +
-      "完成 " + done + "，失败 " + bad + (skip ? "，跳过 " + skip : "");
+      "完成 " + done + "，失败 " + bad + (skip ? "，跳过 " + skip : "") +
+      (state.releaseSummary ? "；" + state.releaseSummary : "");
+    renderSummary();
+  }
+
+  /* ---------- 发行版（Release）同步 ---------- */
+
+  function ghRepoFrom(importUrl) {
+    const m = /^https?:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/.exec((importUrl || "").trim());
+    return m ? m[1] + "/" + m[2] : "";
+  }
+
+  function requestReleaseSync(payload) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ type: "gs-release-sync", payload: payload }, (res) => {
+          if (chrome.runtime.lastError) return resolve({ ok: false, error: "扩展后台未响应，请重新加载扩展" });
+          resolve(res || { ok: false, error: "后台无响应" });
+        });
+      } catch (_) {
+        resolve({ ok: false, error: "扩展后台不可用" });
+      }
+    });
+  }
+
+  async function runReleasePhase(targets) {
+    const list = targets.filter(
+      (i) => i.importUrl && (i.state === "done" || i.state === "queued" || i.state === "syncing")
+    );
+    if (!list.length) return;
+    let ok = 0;
+    let fail = 0;
+    let rels = 0;
+    let assets = 0;
+    for (const item of list) {
+      const ghRepo = ghRepoFrom(item.importUrl);
+      if (!ghRepo) continue;
+      setItem(item, "rel", "读取发行版…");
+      updateSummary();
+      const res = await requestReleaseSync({
+        repo: item.path,
+        ghRepo: ghRepo,
+        giteeToken: state.tokens.gitee,
+        githubToken: state.tokens.github,
+      });
+      if (res && res.ok) {
+        const r = res.result || {};
+        if (r.errors && r.errors.length) {
+          fail++;
+          setItem(item, "error", r.errors[0]);
+        } else {
+          ok++;
+          rels += r.created || 0;
+          assets += r.assets || 0;
+          const skipped = r.assetSkipped && r.assetSkipped.length ? "，跳过 " + r.assetSkipped.length + " 个附件" : "";
+          setItem(item, "done", "发行版 +" + (r.created || 0) + "，附件 " + (r.assets || 0) + skipped);
+        }
+      } else {
+        fail++;
+        setItem(item, "error", (res && res.error) || "发行版同步失败");
+      }
+      renderSummary();
+    }
+    state.releaseSummary = "发行版：成功 " + ok + "，失败 " + fail + "（新增 " + rels + " 个发行版 / " + assets + " 个附件）";
     renderSummary();
   }
 
@@ -476,9 +559,9 @@
       cursor: pointer; font-size: 14px; line-height: 1; display: grid; place-items: center; flex: none;
     }
     .x:hover { background: #e8ebf3; color: #1f2637; }
-    .opts { display: flex; gap: 8px; padding: 0 16px 12px; }
+    .opts { display: flex; gap: 8px; padding: 0 16px 12px; flex-wrap: wrap; }
     .opt {
-      flex: 1; display: flex; align-items: center; gap: 8px; padding: 7px 9px;
+      flex: 1 1 calc(50% - 4px); display: flex; align-items: center; gap: 8px; padding: 7px 9px;
       border: 1px solid #eaeef6; border-radius: 10px; cursor: pointer; background: #fbfcfe;
       font-size: 11.5px; color: #4a5468; user-select: none; transition: border-color .15s, background .15s;
     }
@@ -496,6 +579,18 @@
     .opt.on[data-k="prune"] span { color: #c56a12; }
     .opt.on .sw::after { transform: translateX(13px); }
     .opt span { line-height: 1.25; }
+    .tokens { padding: 0 16px 12px; display: none; }
+    .tokens.on { display: block; }
+    .tk { display: block; margin-bottom: 7px; }
+    .tk span { display: block; font-size: 10.5px; color: #8b93a7; margin-bottom: 3px; }
+    .tk input {
+      width: 100%; border: 1px solid #e4e9f2; border-radius: 8px; padding: 6px 8px;
+      font: 11.5px/1.4 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #1f2637;
+      background: #fbfcfe; outline: none;
+    }
+    .tk input:focus { border-color: #ffc79a; background: #fff; }
+    .tk-row { display: flex; align-items: center; gap: 8px; }
+    .tk-note { flex: 1; font-size: 10.5px; color: #a2aabc; }
     .toolbar {
       display: flex; align-items: center; gap: 8px; padding: 9px 16px;
       border-top: 1px solid #f0f3f9; border-bottom: 1px solid #f0f3f9; background: #fcfdff;
@@ -599,6 +694,19 @@
       <div class="opts">
         <div class="opt" data-k="syncWiki"><i class="sw"></i><span>同步 Wiki</span></div>
         <div class="opt" data-k="prune"><i class="sw"></i><span>删除多余分支/标签</span></div>
+        <div class="opt" data-k="syncRelease"><i class="sw"></i><span>同步发行版与附件</span></div>
+      </div>
+      <div class="tokens">
+        <label class="tk"><span>Gitee 私人令牌（创建发行版、上传附件必需）</span>
+          <input type="password" class="tk-gitee" autocomplete="off" placeholder="在 Gitee → 设置 → 私人令牌 生成">
+        </label>
+        <label class="tk"><span>GitHub Token（可选，避免 API 限流）</span>
+          <input type="password" class="tk-github" autocomplete="off" placeholder="只读权限即可">
+        </label>
+        <div class="tk-row">
+          <span class="tk-note">令牌只存在本机扩展存储里</span>
+          <button class="ghost tk-save">保存令牌</button>
+        </div>
       </div>
       <div class="toolbar">
         <span class="count"></span>
@@ -635,6 +743,10 @@
     ui.btnStop = panel.querySelector(".btn-stop");
     ui.swWiki = panel.querySelector('[data-k="syncWiki"]');
     ui.swPrune = panel.querySelector('[data-k="prune"]');
+    ui.swRelease = panel.querySelector('[data-k="syncRelease"]');
+    ui.tokensEl = panel.querySelector(".tokens");
+    ui.tkGitee = panel.querySelector(".tk-gitee");
+    ui.tkGithub = panel.querySelector(".tk-github");
 
     bind();
   }
@@ -662,6 +774,22 @@
       state.opts.prune = !state.opts.prune;
       saveOpts();
       renderOpts();
+    });
+
+    ui.swRelease.addEventListener("click", () => {
+      state.opts.syncRelease = !state.opts.syncRelease;
+      saveOpts();
+      renderOpts();
+    });
+
+    ui.panel.querySelector(".tk-save").addEventListener("click", () => {
+      state.tokens.gitee = (ui.tkGitee.value || "").trim();
+      state.tokens.github = (ui.tkGithub.value || "").trim();
+      try {
+        chrome.storage.local.set({ [TOKEN_KEY]: state.tokens });
+      } catch (_) {}
+      state.log = state.tokens.gitee ? "令牌已保存" : "已清空 Gitee 令牌";
+      renderSummary();
     });
 
     ui.btnScan.addEventListener("click", async () => {
@@ -783,6 +911,8 @@
   function renderOpts() {
     ui.swWiki.classList.toggle("on", !!state.opts.syncWiki);
     ui.swPrune.classList.toggle("on", !!state.opts.prune);
+    ui.swRelease.classList.toggle("on", !!state.opts.syncRelease);
+    ui.tokensEl.classList.toggle("on", !!state.opts.syncRelease);
   }
 
   function renderList() {
@@ -830,9 +960,9 @@
     r.chip.className = "chip" + (kind ? " " + kind : "");
     r.row.classList.toggle("on", !!item.checked);
     r.row.classList.toggle("locked", item.state === "noimport");
-    if (item.state === "error" && item.msg) {
+    if ((item.state === "error" || item.state === "rel" || item.state === "done") && item.msg) {
       r.src.textContent = item.msg;
-      r.src.classList.add("err");
+      r.src.classList.toggle("err", item.state === "error");
     } else {
       r.src.classList.remove("err");
       r.src.textContent = item.importUrl
@@ -867,6 +997,7 @@
 
   function renderSummary() {
     ui.logEl.textContent = state.log || "";
+    ui.logEl.title = state.log || "";
     ui.btnRun.disabled = state.running || state.scanning || pickTargets().length === 0;
     ui.btnStop.disabled = !state.running;
     ui.btnScan.disabled = state.running || state.scanning;
@@ -967,6 +1098,10 @@
     const saved = await storeGet();
     if (saved[OPT_KEY]) state.opts = Object.assign(state.opts, saved[OPT_KEY]);
     if (saved[CACHE_KEY]) state.cache = saved[CACHE_KEY];
+    if (saved[TOKEN_KEY]) {
+      state.tokens.gitee = saved[TOKEN_KEY].gitee || "";
+      state.tokens.github = saved[TOKEN_KEY].github || "";
+    }
     init();
     watchNav();
   }
@@ -976,7 +1111,18 @@
 
   try {
     chrome.runtime.onMessage.addListener((msg) => {
-      if (msg && msg.type === "gs-toggle") togglePanel();
+      if (!msg) return;
+      if (msg.type === "gs-toggle") {
+        togglePanel();
+      } else if (msg.type === "gs-release-progress") {
+        const item = state.items.find((i) => i.path === msg.repo);
+        if (item) {
+          item.msg = msg.msg;
+          updateRow(item);
+        }
+        state.log = msg.repo.split("/")[1] + " · " + msg.msg;
+        renderSummary();
+      }
     });
   } catch (_) {}
 })();
